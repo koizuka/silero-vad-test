@@ -64,6 +64,24 @@ This implementation uses a simple energy-based approach to detect voice activity
 
 The sensitivity threshold can be adjusted to match different environments and microphones.
 
+## Browser and Electron Compatibility
+
+This project uses modern Web APIs that require recent browser versions:
+
+| Feature | Chrome/Chromium | Electron |
+|---------|----------------|----------|
+| AudioWorklet API | Chrome 64+ | Electron 3.0.0+ |
+| Web Audio API | Chrome 10+ | All Electron versions |
+| MediaDevices.getUserMedia | Chrome 53+ | Electron 1.4.0+ |
+| Blob with arrayBuffer | Chrome 39+ | Electron 0.20.0+ |
+| Fetch API | Chrome 42+ | Electron 0.24.0+ |
+
+For full compatibility with all features including AudioWorklet, we recommend:
+- Chrome/Chromium 64 or later
+- Electron 3.0.0 or later (based on Chromium 66)
+
+If using older versions, the application will automatically fall back to using ScriptProcessorNode, which is deprecated but has wider compatibility (Chrome 10+).
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
