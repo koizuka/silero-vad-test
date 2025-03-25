@@ -14,8 +14,8 @@ This project implements a simple Voice Activity Detection system using Node.js, 
 
 1. Clone this repository:
 ```
-git clone https://github.com/yourusername/silero-vad.git
-cd silero-vad
+git clone https://github.com/koizuka/silero-vad-test.git
+cd silero-vad-test
 ```
 
 2. Create the models directory (if it doesn't exist):
