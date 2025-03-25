@@ -28,6 +28,10 @@ mkdir -p models
 npm install onnxruntime-node
 ```
 
+4. Download the VAD model:
+   - Visit the [Silero VAD repository](https://github.com/snakers4/silero-vad)
+   - Download the ONNX model file and place it in the `models` directory
+
 ## Usage
 
 ### Web Browser Demo
