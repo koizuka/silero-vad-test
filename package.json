@@ -1,0 +1,27 @@
+{
+  "name": "silero-vad",
+  "version": "1.0.0",
+  "description": "Node.js implementation of silero-vad using ONNX Runtime",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node src/index.js",
+    "electron": "node src/electron-demo.js"
+  },
+  "keywords": [
+    "vad",
+    "voice activity detection",
+    "onnx",
+    "speech",
+    "audio"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "dependencies": {
+    "onnxruntime-node": "^1.21.0"
+  }
+}

@@ -1,0 +1,25 @@
+# Node.js dependencies
+node_modules/
+
+# Model files (to be downloaded separately)
+models/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific
+.DS_Store
+Thumbs.db

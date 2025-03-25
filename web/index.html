@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Silero VAD Demo</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    .container {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .status {
+      padding: 20px;
+      border-radius: 5px;
+      text-align: center;
+      font-weight: bold;
+      transition: background-color 0.3s;
+    }
+    .silent {
+      background-color: #f0f0f0;
+    }
+    .speaking {
+      background-color: #4CAF50;
+      color: white;
+    }
+    button {
+      padding: 10px 15px;
+      cursor: pointer;
+    }
+    .visualizer {
+      height: 100px;
+      background-color: #f0f0f0;
+      position: relative;
+    }
+    canvas {
+      width: 100%;
+      height: 100%;
+    }
+    .settings {
+      border: 1px solid #ddd;
+      padding: 15px;
+      border-radius: 5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Silero VAD Demo</h1>
+    <p>This demo uses the Web Audio API to capture microphone input and process it with Silero VAD to detect voice activity.</p>
+    
+    <div class="controls">
+      <button id="startButton">Start Microphone</button>
+      <button id="stopButton" disabled>Stop</button>
+    </div>
+    
+    <div id="status" class="status silent">Waiting for microphone...</div>
+    
+    <div class="visualizer">
+      <canvas id="audioVisualizer"></canvas>
+    </div>
+    
+    <div class="settings">
+      <h3>Settings</h3>
+      <div>
+        <label for="thresholdSlider">VAD Sensitivity: </label>
+        <input type="range" id="thresholdSlider" min="0.0001" max="0.01" step="0.0001" value="0.0005">
+        <span id="thresholdValue">0.0005</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- AudioWorklet Processor Code -->
+  <script id="audioProcessorCode" type="text/worklet-processor">
+    // Audio Worklet Processor for audio processing
+    class AudioProcessor extends AudioWorkletProcessor {
+      constructor() {
+        super();
+        this.bufferSize = 1024;
+        this.audioChunks = [];
+        this.port.onmessage = this.handleMessage.bind(this);
+      }
+      
+      handleMessage(event) {
+        if (event.data.type === 'config') {
+          // Handle configuration messages
+        }
+      }
+      
+      process(inputs, outputs, parameters) {
+        // Get the first input channel's data
+        const input = inputs[0];
+        if (!input || !input.length) return true;
+        
+        const inputData = input[0];
+        if (!inputData) return true;
+        
+        // Clone the audio data
+        const audioChunk = new Float32Array(inputData.length);
+        audioChunk.set(inputData);
+        
+        // Send audio data to main thread for visualization
+        this.port.postMessage({
+          type: 'visualize',
+          audioData: audioChunk
+        });
+        
+        // Add to buffer for VAD processing
+        this.audioChunks.push(audioChunk);
+        
+        // When we have enough data, send it for VAD processing
+        if (this.audioChunks.length >= 15) { // ~1536 samples at 16kHz
+          // Concatenate chunks
+          const totalSize = this.audioChunks.reduce((acc, chunk) => acc + chunk.length, 0);
+          const fullAudio = new Float32Array(totalSize);
+          
+          let offset = 0;
+          this.audioChunks.forEach(chunk => {
+            fullAudio.set(chunk, offset);
+            offset += chunk.length;
+          });
+          
+          // Send to main thread for VAD processing
+          this.port.postMessage({
+            type: 'process',
+            audioData: fullAudio,
+            sampleRate: sampleRate
+          });
+          
+          // Reset buffer
+          this.audioChunks = [];
+        }
+        
+        // Return true to keep the processor alive
+        return true;
+      }
+    }
+    
+    registerProcessor('audio-processor', AudioProcessor);
+  </script>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      // UI Elements
+      const startButton = document.getElementById('startButton');
+      const stopButton = document.getElementById('stopButton');
+      const statusElement = document.getElementById('status');
+      const thresholdSlider = document.getElementById('thresholdSlider');
+      const thresholdValue = document.getElementById('thresholdValue');
+      const canvas = document.getElementById('audioVisualizer');
+      const canvasCtx = canvas.getContext('2d');
+      
+      // Audio context and analyzer
+      let audioContext;
+      let analyser;
+      let microphone;
+      let audioWorkletNode;
+      let isSpeaking = false;
+      
+      // VAD settings
+      let vadThreshold = 0.5;
+      
+      // Update threshold value
+      thresholdSlider.addEventListener('input', function() {
+        vadThreshold = parseFloat(this.value);
+        thresholdValue.textContent = vadThreshold.toFixed(6);
+      });
+      
+      // Send threshold updates to server when slider stops moving
+      thresholdSlider.addEventListener('change', async function() {
+        try {
+          const response = await fetch('/api/set-threshold', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ threshold: vadThreshold })
+          });
+          
+          if (!response.ok) {
+            console.error('Failed to update server threshold');
+          }
+        } catch (error) {
+          console.error('Error updating threshold:', error);
+        }
+      });
+      
+      // Start microphone with AudioWorklet
+      startButton.addEventListener('click', async function() {
+        try {
+          // Create audio context
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          
+          // Get microphone stream
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          microphone = audioContext.createMediaStreamSource(stream);
+          
+          // Set up analyzer for visualization
+          analyser = audioContext.createAnalyser();
+          analyser.fftSize = 2048;
+          microphone.connect(analyser);
+          
+          try {
+            // Load and register the AudioWorklet
+            const processorUrl = URL.createObjectURL(new Blob([
+              document.getElementById('audioProcessorCode').textContent
+            ], { type: 'text/javascript' }));
+            
+            await audioContext.audioWorklet.addModule(processorUrl);
+            
+            // Create AudioWorkletNode
+            audioWorkletNode = new AudioWorkletNode(audioContext, 'audio-processor');
+            
+            // Connect microphone to worklet
+            microphone.connect(audioWorkletNode);
+            audioWorkletNode.connect(audioContext.destination);
+            
+            // Handle messages from AudioWorklet
+            audioWorkletNode.port.onmessage = async function(event) {
+              const message = event.data;
+              
+              if (message.type === 'visualize') {
+                // Update visualization
+                visualizeAudio(message.audioData);
+              } 
+              else if (message.type === 'process') {
+                // Process audio for VAD
+                const audioData = message.audioData;
+                const originalSampleRate = message.sampleRate;
+                const targetSampleRate = 16000; // Silero VAD expects 16kHz
+                
+                // Resample if needed
+                const resampledAudio = originalSampleRate !== targetSampleRate
+                  ? resampleAudio(audioData, originalSampleRate, targetSampleRate)
+                  : audioData;
+                
+                // Process with Silero VAD using server API
+                try {
+                  // Convert Float32Array to binary data for transmission
+                  const blob = new Blob([resampledAudio.buffer], { type: 'application/octet-stream' });
+                  
+                  const vadResponse = await fetch('/api/vad', {
+                    method: 'POST',
+                    body: blob,
+                    headers: {
+                      'Content-Type': 'application/octet-stream'
+                    }
+                  });
+                  
+                  if (vadResponse.ok) {
+                    const result = await vadResponse.json();
+                    // Update UI based on server VAD result
+                    updateStatus(result.isSpeech);
+                  } else {
+                    const errorText = await vadResponse.text();
+                    console.error('Error from VAD server:', errorText);
+                    // Fallback to simple energy-based detection
+                    const energy = calculateEnergy(resampledAudio);
+                    const isSpeech = energy > vadThreshold * 0.01;
+                    updateStatus(isSpeech);
+                  }
+                } catch (error) {
+                  console.error('Failed to connect to VAD server:', error);
+                  // Fallback to simple energy-based detection
+                  const energy = calculateEnergy(resampledAudio);
+                  const isSpeech = energy > vadThreshold * 0.01;
+                  updateStatus(isSpeech);
+                }
+              }
+            };
+            
+            // Update UI
+            startButton.disabled = true;
+            stopButton.disabled = false;
+            statusElement.textContent = 'Listening...';
+            
+          } catch (workletError) {
+            console.error('AudioWorklet not supported, falling back to ScriptProcessor:', workletError);
+            fallbackToScriptProcessor(stream);
+          }
+          
+        } catch (error) {
+          console.error('Error accessing microphone:', error);
+          alert('Error accessing microphone: ' + error.message);
+        }
+      });
+      
+      // Fallback to ScriptProcessor if AudioWorklet is not supported
+      function fallbackToScriptProcessor(stream) {
+        console.warn('Using deprecated ScriptProcessorNode as fallback');
+        
+        const scriptProcessor = audioContext.createScriptProcessor(1024, 1, 1);
+        
+        // Update initial threshold from the slider
+        vadThreshold = parseFloat(thresholdSlider.value);
+        thresholdValue.textContent = vadThreshold.toFixed(6);
+        
+        let audioChunks = [];
+        let sampleRate = audioContext.sampleRate;
+        const targetSampleRate = 16000; // Silero VAD expects 16kHz
+        
+        scriptProcessor.onaudioprocess = function(event) {
+          const inputData = event.inputBuffer.getChannelData(0);
+          
+          // Clone the data for visualization
+          const visualData = new Float32Array(inputData.length);
+          visualData.set(inputData);
+          visualizeAudio(visualData);
+          
+          // Add chunks to buffer
+          const chunk = new Float32Array(inputData.length);
+          chunk.set(inputData);
+          audioChunks.push(chunk);
+          
+          // Process when we have enough data
+          if (audioChunks.length >= 15) { // ~1536 samples at 16kHz
+            // Concatenate chunks
+            const fullAudio = concatenateAudioBuffers(audioChunks);
+            audioChunks = [];
+            
+            // Resample if needed
+            const resampledAudio = sampleRate !== targetSampleRate 
+              ? resampleAudio(fullAudio, sampleRate, targetSampleRate) 
+              : fullAudio;
+            
+            // Process with Silero VAD using server API
+            // Using promises instead of await since we're in a non-async function
+            const blob = new Blob([resampledAudio.buffer], { type: 'application/octet-stream' });
+            
+            fetch('/api/vad', {
+              method: 'POST',
+              body: blob,
+              headers: {
+                'Content-Type': 'application/octet-stream'
+              }
+            })
+            .then(vadResponse => {
+              if (vadResponse.ok) {
+                return vadResponse.json();
+              } else {
+                return vadResponse.text().then(errorText => {
+                  console.error('Error from VAD server:', errorText);
+                  // Fallback to simple energy-based detection
+                  const energy = calculateEnergy(resampledAudio);
+                  const isSpeech = energy > vadThreshold * 0.01;
+                  updateStatus(isSpeech);
+                  throw new Error('VAD server error');
+                });
+              }
+            })
+            .then(result => {
+              // Update UI based on server VAD result
+              updateStatus(result.isSpeech);
+            })
+            .catch(error => {
+              console.error('Failed to connect to VAD server:', error);
+              // Fallback to simple energy-based detection if there was an error and we haven't already processed it
+              if (error.message !== 'VAD server error') {
+                const energy = calculateEnergy(resampledAudio);
+                const isSpeech = energy > vadThreshold * 0.01;
+                updateStatus(isSpeech);
+              }
+            });
+          }
+        };
+        
+        // Connect script processor
+        microphone.connect(scriptProcessor);
+        scriptProcessor.connect(audioContext.destination);
+        
+        // Store scriptProcessor for cleanup
+        audioWorkletNode = scriptProcessor;
+      }
+      
+      // Stop microphone
+      stopButton.addEventListener('click', function() {
+        if (microphone) {
+          if (audioWorkletNode) {
+            audioWorkletNode.disconnect();
+          }
+          if (analyser) {
+            analyser.disconnect();
+          }
+          microphone.disconnect();
+          
+          // Stop all tracks
+          audioContext.close();
+          
+          // Reset UI
+          startButton.disabled = false;
+          stopButton.disabled = true;
+          statusElement.textContent = 'Microphone stopped';
+          statusElement.className = 'status silent';
+        }
+      });
+      
+      // Update status UI
+      function updateStatus(isSpeech) {
+        if (isSpeech !== isSpeaking) {
+          isSpeaking = isSpeech;
+          if (isSpeaking) {
+            statusElement.textContent = 'Speaking detected!';
+            statusElement.className = 'status speaking';
+          } else {
+            statusElement.textContent = 'Silence';
+            statusElement.className = 'status silent';
+          }
+        }
+      }
+      
+      // Audio visualization
+      function visualizeAudio(audioData) {
+        const WIDTH = canvas.width;
+        const HEIGHT = canvas.height;
+        
+        canvasCtx.clearRect(0, 0, WIDTH, HEIGHT);
+        canvasCtx.fillStyle = 'rgb(200, 200, 200)';
+        canvasCtx.fillRect(0, 0, WIDTH, HEIGHT);
+        
+        canvasCtx.lineWidth = 2;
+        canvasCtx.strokeStyle = 'rgb(0, 0, 0)';
+        canvasCtx.beginPath();
+        
+        const sliceWidth = WIDTH / audioData.length;
+        let x = 0;
+        
+        for (let i = 0; i < audioData.length; i++) {
+          const v = audioData[i] * 0.5;
+          const y = HEIGHT / 2 + v * HEIGHT / 2;
+          
+          if (i === 0) {
+            canvasCtx.moveTo(x, y);
+          } else {
+            canvasCtx.lineTo(x, y);
+          }
+          
+          x += sliceWidth;
+        }
+        
+        canvasCtx.lineTo(WIDTH, HEIGHT / 2);
+        canvasCtx.stroke();
+      }
+      
+      // Helper functions
+      function concatenateAudioBuffers(buffers) {
+        let totalLength = 0;
+        buffers.forEach(buffer => {
+          totalLength += buffer.length;
+        });
+        
+        const result = new Float32Array(totalLength);
+        let offset = 0;
+        
+        buffers.forEach(buffer => {
+          result.set(buffer, offset);
+          offset += buffer.length;
+        });
+        
+        return result;
+      }
+      
+      function resampleAudio(audioBuffer, originalSampleRate, targetSampleRate) {
+        // Simple audio resampling with linear interpolation
+        const ratio = originalSampleRate / targetSampleRate;
+        const newLength = Math.floor(audioBuffer.length / ratio);
+        const result = new Float32Array(newLength);
+        
+        for (let i = 0; i < newLength; i++) {
+          const origPos = i * ratio;
+          const origIndex = Math.floor(origPos);
+          const fraction = origPos - origIndex;
+          
+          if (origIndex + 1 < audioBuffer.length) {
+            result[i] = audioBuffer[origIndex] * (1 - fraction) + audioBuffer[origIndex + 1] * fraction;
+          } else {
+            result[i] = audioBuffer[origIndex];
+          }
+        }
+        
+        return result;
+      }
+      
+      function calculateEnergy(buffer) {
+        let sum = 0;
+        for (let i = 0; i < buffer.length; i++) {
+          sum += buffer[i] * buffer[i];
+        }
+        return sum / buffer.length;
+      }
+      
+      // Resize canvas when window resizes
+      function resizeCanvas() {
+        canvas.width = canvas.offsetWidth;
+        canvas.height = canvas.offsetHeight;
+      }
+      
+      window.addEventListener('resize', resizeCanvas);
+      resizeCanvas();
+    });
+  </script>
+</body>
+</html>
